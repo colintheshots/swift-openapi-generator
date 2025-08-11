@@ -6451,6 +6451,13 @@ private func XCTAssertSwiftEquivalent(
 }
 
 private func diff(expected: String, actual: String) throws -> String {
+    #if targetEnvironment(macCatalyst)
+    return """
+    [diff disabled on Mac Catalyst]\n
+    expected:\n\(expected)\n
+    actual:\n\(actual)
+    """
+    #else
     let process = Process()
     process.executableURL = try resolveExecutable("bash")
     process.arguments = ["-c", "diff -U5 --label=expected <(echo '\(expected)') --label=actual <(echo '\(actual)')"]
@@ -6466,6 +6473,7 @@ private func diff(expected: String, actual: String) throws -> String {
         """
     )
     return String(decoding: pipeData, as: UTF8.self)
+    #endif
 }
 
 fileprivate extension Declaration {

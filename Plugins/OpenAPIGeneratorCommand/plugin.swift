@@ -1,3 +1,4 @@
+// swift-tools-version:6.1
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the SwiftOpenAPIGenerator open source project
@@ -15,23 +16,23 @@ import PackagePlugin
 import Foundation
 
 @main struct SwiftOpenAPIGeneratorPlugin {
+
     func runCommand(
-        targetWorkingDirectory: Path,
-        tool: (String) throws -> PluginContext.Tool,
+        targetWorkingDirectoryURL: URL,
+        tool: URL,
         sourceFiles: FileList,
         targetName: String
     ) throws {
         let inputs = try PluginUtils.validateInputs(
-            workingDirectory: targetWorkingDirectory,
+            workingDirectoryURL: targetWorkingDirectoryURL,
             tool: tool,
             sourceFiles: sourceFiles,
             targetName: targetName,
             pluginSource: .command
         )
 
-        let toolUrl = URL(fileURLWithPath: inputs.tool.path.string)
         let process = Process()
-        process.executableURL = toolUrl
+        process.executableURL = inputs.tool
         process.arguments = inputs.arguments
         process.environment = [:]
         try process.run()
@@ -46,6 +47,7 @@ extension SwiftOpenAPIGeneratorPlugin: CommandPlugin {
         let targets: [Target]
         if targetNameArguments.isEmpty {
             targets = context.package.targets
+            Diagnostics.error(targets.debugDescription)
         } else {
             let matchingTargets = try context.package.targets(named: targetNameArguments)
             let packageTargets = Set(context.package.targets.map(\.id))
@@ -72,9 +74,10 @@ extension SwiftOpenAPIGeneratorPlugin: CommandPlugin {
             }
             do {
                 log("- Trying OpenAPI code generation.")
+                let tool = try context.tool(named: "swift-openapi-generator").url
                 try runCommand(
-                    targetWorkingDirectory: target.directory,
-                    tool: context.tool,
+                    targetWorkingDirectoryURL: target.directoryURL,
+                    tool: tool,
                     sourceFiles: swiftTarget.sourceFiles,
                     targetName: target.name
                 )

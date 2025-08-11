@@ -236,6 +236,13 @@ extension FileBasedReferenceTests {
     }
 
     private func runDiff(reference: URL, actual: URL) throws -> String {
+        #if targetEnvironment(macCatalyst)
+        return """
+        [diff disabled on Mac Catalyst]\n
+        reference: \(reference.path)\n
+        actual: \(actual.path)
+        """
+        #else
         let process = Process()
         process.executableURL = try resolveExecutable("git")
         process.currentDirectoryURL = self.referenceTestResourcesDirectory
@@ -261,6 +268,7 @@ extension FileBasedReferenceTests {
             """
         )
         return String(decoding: pipeData, as: UTF8.self)
+        #endif
     }
 
     func heading(_ message: String, paddingCharacter: Character, lineLength: Int) -> String {

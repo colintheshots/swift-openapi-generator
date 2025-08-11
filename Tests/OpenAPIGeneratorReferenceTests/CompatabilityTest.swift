@@ -287,7 +287,7 @@ fileprivate extension CompatibilityTest {
             XCTAssertNoThrow(try FileManager.default.createDirectory(at: packageDir, withIntermediateDirectories: true))
             let packageSwiftPath = packageDir.appendingPathComponent("Package.swift", isDirectory: false)
             let packageSwiftContents = """
-                // swift-tools-version:5.9
+                // swift-tools-version:6.0
                 import PackageDescription
                 let package = Package(
                     name: "\(packageName)",
@@ -313,6 +313,9 @@ fileprivate extension CompatibilityTest {
             }
 
             // Build the package.
+            #if targetEnvironment(macCatalyst)
+            log("Skipping Swift package build on Mac Catalyst")
+            #else
             let process = Process()
             process.executableURL = try resolveExecutable("swift")
             process.arguments = [
@@ -341,6 +344,7 @@ fileprivate extension CompatibilityTest {
                 --
                 """
             )
+            #endif
         }
 
         log("Finished compatibility test")
