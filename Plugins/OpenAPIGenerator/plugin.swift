@@ -16,27 +16,27 @@ import Foundation
 
 @main struct SwiftOpenAPIGeneratorPlugin {
     func createBuildCommands(
-        pluginWorkDirectory: Path,
-        tool: (String) throws -> PluginContext.Tool,
+        pluginWorkDirectoryURL: URL,
+        tool: PluginContext.Tool,
         sourceFiles: FileList,
         targetName: String
     ) throws -> [Command] {
         let inputs = try PluginUtils.validateInputs(
-            workingDirectory: pluginWorkDirectory,
+            workingDirectoryURL: pluginWorkDirectoryURL,
             tool: tool,
             sourceFiles: sourceFiles,
             targetName: targetName,
             pluginSource: .build
         )
 
-        let outputFiles: [Path] = GeneratorMode.allCases.map { inputs.genSourcesDir.appending($0.outputFileName) }
+        let outputFiles: [URL] = GeneratorMode.allCases.map { inputs.genSourcesDirURL.appendingPathComponent($0.outputFileName) }
         return [
             .buildCommand(
                 displayName: "Running swift-openapi-generator",
-                executable: inputs.tool.path,
+                executable: inputs.tool.url,
                 arguments: inputs.arguments,
                 environment: [:],
-                inputFiles: [inputs.config, inputs.doc],
+                inputFiles: [inputs.configURL, inputs.docURL],
                 outputFiles: outputFiles
             )
         ]
@@ -49,8 +49,8 @@ extension SwiftOpenAPIGeneratorPlugin: BuildToolPlugin {
             throw PluginError.incompatibleTarget(name: target.name)
         }
         return try createBuildCommands(
-            pluginWorkDirectory: context.pluginWorkDirectory,
-            tool: context.tool,
+            pluginWorkDirectoryURL: context.pluginWorkDirectoryURL,
+            tool: try context.tool(named: "OpenAPIGenerator"),
             sourceFiles: swiftTarget.sourceFiles,
             targetName: target.name
         )
@@ -63,8 +63,8 @@ import XcodeProjectPlugin
 extension SwiftOpenAPIGeneratorPlugin: XcodeBuildToolPlugin {
     func createBuildCommands(context: XcodePluginContext, target: XcodeTarget) throws -> [Command] {
         try createBuildCommands(
-            pluginWorkDirectory: context.pluginWorkDirectory,
-            tool: context.tool,
+            pluginWorkDirectoryURL: context.pluginWorkDirectoryURL,
+            tool: try context.tool(named: "OpenAPIGenerator"),
             sourceFiles: target.inputFiles,
             targetName: target.displayName
         )
