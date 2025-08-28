@@ -16,72 +16,39 @@ import PackagePlugin
 import Foundation
 
 @main struct SwiftOpenAPIGeneratorPlugin {
-    /// Attempt to locate the tool in DerivedData Build/Products when the provided path contains unexpanded variables
-    /// or points to a non-existent configuration directory.
-    private func searchDerivedDataForBinary(_ binaryName: String, anchor: URL?) -> URL? {
-        let fm = FileManager.default
-        func buildProductsDirs(from root: URL) -> [URL] {
-            let products = root.appendingPathComponent("Build", isDirectory: true)
-                .appendingPathComponent("Products", isDirectory: true)
-            var dirs: [URL] = []
-            if fm.fileExists(atPath: products.path) { dirs.append(products) }
-            return dirs
-        }
-        var candidates: [URL] = []
-        if let anchor = anchor {
-            let comps = anchor.path.split(separator: "/").map(String.init)
-            if let ddIndex = comps.firstIndex(of: "DerivedData"), ddIndex + 1 < comps.count {
-                let projectComponent = comps[ddIndex + 1]
-                let derivedDataRoot = URL(fileURLWithPath: "/" + comps.prefix(ddIndex + 2).joined(separator: "/"), isDirectory: true)
-                candidates.append(contentsOf: buildProductsDirs(from: derivedDataRoot.appendingPathComponent(projectComponent, isDirectory: true)))
-            }
-        }
-        if candidates.isEmpty {
-            let dd = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-                .appendingPathComponent("Library/Developer/Xcode/DerivedData", isDirectory: true)
-            if let contents = try? fm.contentsOfDirectory(at: dd, includingPropertiesForKeys: nil) {
-                for child in contents where child.hasDirectoryPath {
-                    candidates.append(contentsOf: buildProductsDirs(from: child))
-                }
-            }
-        }
-        let preferredSuffixes = ["-maccatalyst"]
-        for dir in candidates {
-            if let subs = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
-                let ordered = subs.sorted { a, b in
-                    preferredSuffixes.contains(where: { a.lastPathComponent.hasSuffix($0) }) && !preferredSuffixes.contains(where: { b.lastPathComponent.hasSuffix($0) })
-                }
-                for sub in ordered where sub.hasDirectoryPath {
-                    let candidate = sub.appendingPathComponent(binaryName, isDirectory: false)
-                    if fm.isExecutableFile(atPath: candidate.path) { return candidate }
-                }
-            }
-        }
-        return nil
+    /// Create a small launcher script that resolves the actual tool path at build time,
+    /// leveraging Xcode-provided environment variables (e.g. BUILT_PRODUCTS_DIR), which
+    /// are not available inside the plugin process itself.
+    private func makeToolLauncher(in directory: URL, toolURL: URL) throws -> URL {
+        let binaryName = toolURL.lastPathComponent
+        let launcherURL = directory.appendingPathComponent("swift-openapi-generator-launcher.sh", isDirectory: false)
+        let script = #"""
+        #!/bin/sh
+        BIN_ORIG="\#(toolURL.path)"
+        BIN_OVERRIDE="${SWIFT_OPENAPI_GENERATOR_TOOL_OVERRIDE}"
+        if [ -n "$BIN_OVERRIDE" ] && [ -x "$BIN_OVERRIDE" ]; then exec "$BIN_OVERRIDE" "$@"; fi
+        if [ -x "$BIN_ORIG" ]; then exec "$BIN_ORIG" "$@"; fi
+        BIN_CAND="$BIN_ORIG"
+        BIN_CAND="${BIN_CAND/\/Debug\//\/Debug-maccatalyst\/}"
+        BIN_CAND="${BIN_CAND/\/Staging\//\/Staging-maccatalyst\/}"
+        BIN_CAND="${BIN_CAND/\/Release\//\/Release-maccatalyst\/}"
+        if [ -x "$BIN_CAND" ]; then exec "$BIN_CAND" "$@"; fi
+        if [ -n "${BUILT_PRODUCTS_DIR}" ] && [ -x "${BUILT_PRODUCTS_DIR}/\#(binaryName)" ]; then exec "${BUILT_PRODUCTS_DIR}/\#(binaryName)" "$@"; fi
+        if [ -n "${TARGET_BUILD_DIR}" ] && [ -x "${TARGET_BUILD_DIR}/\#(binaryName)" ]; then exec "${TARGET_BUILD_DIR}/\#(binaryName)" "$@"; fi
+        echo "swift-openapi-generator not found at expected paths" 1>&2
+        echo "Tried:" 1>&2
+        echo "  $BIN_OVERRIDE" 1>&2
+        echo "  $BIN_ORIG" 1>&2
+        echo "  $BIN_CAND" 1>&2
+        if [ -n "${BUILT_PRODUCTS_DIR}" ]; then echo "  ${BUILT_PRODUCTS_DIR}/\#(binaryName)" 1>&2; fi
+        if [ -n "${TARGET_BUILD_DIR}" ]; then echo "  ${TARGET_BUILD_DIR}/\#(binaryName)" 1>&2; fi
+        exit 127
+        """#
+        try Data(script.utf8).write(to: launcherURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcherURL.path)
+        return launcherURL
     }
-    /// Workaround for SwiftPM returning a tool URL under `Debug/` or `Release/`
-    /// while the actual binary is emitted under `Debug-maccatalyst/` or `Release-maccatalyst/`.
-    private func resolveToolURLForMacCatalyst(_ url: URL, anchor: URL?) -> URL {
-        let fileManager = FileManager.default
-        if fileManager.isExecutableFile(atPath: url.path) { return url }
-        let configDirURL = url.deletingLastPathComponent()
-        let parentDirURL = configDirURL.deletingLastPathComponent()
-        let configName = configDirURL.lastPathComponent
-        let binaryName = url.lastPathComponent
-        let candidateNames: [String]
-        if configName.hasSuffix("-maccatalyst") {
-            candidateNames = [configName]
-        } else {
-            candidateNames = ["\(configName)-maccatalyst"]
-        }
-        for candidate in candidateNames {
-            let candidateURL = parentDirURL.appendingPathComponent(candidate, isDirectory: true)
-                .appendingPathComponent(binaryName, isDirectory: false)
-            if fileManager.isExecutableFile(atPath: candidateURL.path) { return candidateURL }
-        }
-        if let found = searchDerivedDataForBinary(binaryName, anchor: anchor) { return found }
-        return url
-    }
+    // (obsolete: path rewriting and DerivedData scanning were superseded by the launcher)
     func createBuildCommands(
         pluginWorkDirectoryURL: URL,
         tool: URL,
@@ -97,10 +64,11 @@ import Foundation
         )
 
         let outputFiles: [URL] = GeneratorMode.allCases.map { inputs.genSourcesDirURL.appendingPathComponent($0.outputFileName) }
+        let launcher = try makeToolLauncher(in: pluginWorkDirectoryURL, toolURL: inputs.tool)
         return [
             .buildCommand(
                 displayName: "Running swift-openapi-generator",
-                executable: inputs.tool,
+                executable: launcher,
                 arguments: inputs.arguments,
                 environment: [:],
                 inputFiles: [inputs.configURL, inputs.docURL],
@@ -112,7 +80,7 @@ import Foundation
 
 extension SwiftOpenAPIGeneratorPlugin: BuildToolPlugin {
     func createBuildCommands(context: PluginContext, target: Target) async throws -> [Command] {
-        let tool = resolveToolURLForMacCatalyst(try context.tool(named: "swift-openapi-generator").url, anchor: context.pluginWorkDirectoryURL)
+        let tool = try context.tool(named: "swift-openapi-generator").url
         guard let swiftTarget = target as? SwiftSourceModuleTarget else {
             throw PluginError.incompatibleTarget(name: target.name)
         }
@@ -131,7 +99,7 @@ import CoreLocation
 
 extension SwiftOpenAPIGeneratorPlugin: XcodeBuildToolPlugin {
     func createBuildCommands(context: XcodePluginContext, target: XcodeTarget) throws -> [Command] {
-        let tool = resolveToolURLForMacCatalyst(try context.tool(named: "swift-openapi-generator").url, anchor: context.pluginWorkDirectoryURL)
+        let tool = try context.tool(named: "swift-openapi-generator").url
         return try createBuildCommands(
             pluginWorkDirectoryURL: context.pluginWorkDirectoryURL,
             tool: tool,
